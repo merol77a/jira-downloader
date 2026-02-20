@@ -11,6 +11,7 @@ pub enum FileState {
     Pending,
     Downloading { downloaded: u64, total: u64 },
     Done,
+    AlreadyOnDisk,
     Error(String),
 }
 
@@ -20,7 +21,7 @@ impl FileState {
             FileState::Downloading { downloaded, total } if *total > 0 => {
                 Some(*downloaded as f32 / *total as f32)
             }
-            FileState::Done => Some(1.0),
+            FileState::Done | FileState::AlreadyOnDisk => Some(1.0),
             _ => None,
         }
     }
@@ -37,6 +38,7 @@ impl FileState {
                 }
             }
             FileState::Done => "Done ✓".to_string(),
+            FileState::AlreadyOnDisk => "On disk ✓".to_string(),
             FileState::Error(e) => format!("Error: {e}"),
         }
     }
@@ -139,7 +141,7 @@ impl DownloadManager {
         for item in items {
             if item.selected {
                 let state = item.current_state();
-                if matches!(state, FileState::Pending | FileState::Error(_)) {
+                if matches!(state, FileState::Pending | FileState::Error(_) | FileState::Done) {
                     self.start_download(item, issue_key, config, ctx.clone());
                 }
             }

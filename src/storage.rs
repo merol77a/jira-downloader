@@ -78,6 +78,14 @@ impl StorageManager {
         serde_json::from_str(&data).ok()
     }
 
+    pub fn attachment_exists(&self, issue_key: &str, attachment: &Attachment) -> bool {
+        let date_str = attachment.created.format("%Y-%m-%d").to_string();
+        self.issue_dir(issue_key)
+            .join(&date_str)
+            .join(&attachment.filename)
+            .exists()
+    }
+
     pub fn save_attachment(
         &self,
         issue_key: &str,

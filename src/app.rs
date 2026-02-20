@@ -34,6 +34,7 @@ pub struct App {
     my_issues: Vec<IssueSummary>,
     my_issues_status: Arc<Mutex<Option<Result<Vec<IssueSummary>, String>>>>,
     my_issues_loading: bool,
+    my_issues_error: Option<String>,
 
     // Incidents Manager tab
     incidents: Vec<IncidentFolder>,
@@ -68,6 +69,7 @@ impl App {
             my_issues: Vec::new(),
             my_issues_status,
             my_issues_loading: false,
+            my_issues_error: None,
             incidents: Vec::new(),
             incidents_scan_status: String::new(),
             check_status: Arc::new(Mutex::new(Vec::new())),
@@ -221,9 +223,10 @@ impl App {
     // ─── Incident ──────────────────────────────────────────────────────────────
 
     fn render_incident(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // Auto-load my issues on first render if credentials are present
+        // Auto-load my issues on first render if credentials are present and no error yet
         if !self.my_issues_loading
             && self.my_issues.is_empty()
+            && self.my_issues_error.is_none()
             && !self.config.jira_url.is_empty()
             && !self.config.email.is_empty()
         {
@@ -236,12 +239,34 @@ impl App {
             Some(Ok(issues)) => {
                 self.my_issues = issues;
                 self.my_issues_loading = false;
+                self.my_issues_error = None;
             }
-            Some(Err(_)) => {
+            Some(Err(e)) => {
                 self.my_issues_loading = false;
+                self.my_issues_error = Some(e);
             }
             None => {}
         }
+
+        // ── Incident input row (top) ──────────────────────────────────────────
+        let fetch_triggered = ui
+            .horizontal(|ui| {
+                ui.label(RichText::new("Incident:").strong());
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.incident_input)
+                        .hint_text("PROJ-123 or full JIRA URL")
+                        .desired_width(300.0),
+                );
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.button("Fetch").clicked() || enter
+            })
+            .inner;
+
+        if fetch_triggered {
+            self.do_fetch(ctx);
+        }
+
+        ui.add_space(4.0);
 
         // ── My Cases panel ────────────────────────────────────────────────────
         let mut selected_key: Option<String> = None;
@@ -253,12 +278,19 @@ impl App {
         .show(ui, |ui| {
             if self.my_issues_loading && self.my_issues.is_empty() {
                 ui.colored_label(Color32::GRAY, "Loading...");
+            } else if let Some(err) = &self.my_issues_error {
+                ui.colored_label(Color32::from_rgb(200, 60, 60), format!("Error: {err}"));
+                if ui.small_button("↻ Retry").clicked() {
+                    self.my_issues_error = None;
+                    self.my_issues_loading = false;
+                    self.load_my_issues(ctx);
+                }
             } else if self.my_issues.is_empty() {
                 ui.colored_label(Color32::GRAY, "No open cases assigned to you.");
             } else {
                 let refresh = ui.small_button("↻ Refresh").clicked();
                 if refresh {
-                    self.my_issues_loading = false; // allow reload
+                    self.my_issues_loading = false;
                     self.load_my_issues(ctx);
                 }
 
@@ -296,8 +328,8 @@ impl App {
                                     };
                                     ui.label(summary);
 
-                                    let status_color = status_color(&issue.status);
-                                    ui.colored_label(status_color, &issue.status);
+                                    let sc = status_color(&issue.status);
+                                    ui.colored_label(sc, &issue.status);
                                     ui.end_row();
                                 }
                             });
@@ -313,28 +345,6 @@ impl App {
         ui.separator();
         ui.add_space(4.0);
 
-        // ── Manual input row ──────────────────────────────────────────────────
-        ui.heading("Incident");
-        ui.add_space(4.0);
-
-        // Input row — return click intent from closure
-        let fetch_triggered = ui
-            .horizontal(|ui| {
-                ui.label("Incident:");
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.incident_input)
-                        .hint_text("PROJ-123 or full JIRA URL")
-                        .desired_width(300.0),
-                );
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                ui.button("Fetch").clicked() || enter
-            })
-            .inner;
-
-        if fetch_triggered {
-            self.do_fetch(ctx);
-        }
-
         // Process fetch result — update self before any rendering borrows
         let fetch_result = self.fetch_status.lock().unwrap().clone();
         match fetch_result {
@@ -345,7 +355,15 @@ impl App {
                 self.download_items = issue
                     .attachments
                     .iter()
-                    .map(|a| DownloadItem::new(a.clone()))
+                    .map(|a| {
+                        let on_disk = storage.attachment_exists(&issue.key, a);
+                        let mut item = DownloadItem::new(a.clone());
+                        if on_disk {
+                            item.selected = false;
+                            *item.state.lock().unwrap() = FileState::AlreadyOnDisk;
+                        }
+                        item
+                    })
                     .collect();
                 self.current_issue = Some(issue);
                 *self.fetch_status.lock().unwrap() = None;
@@ -363,7 +381,6 @@ impl App {
             .map(|i| (i.key.clone(), i.summary.clone(), i.status.clone()));
 
         if let Some((issue_key, summary, status)) = issue_data {
-            ui.add_space(4.0);
             let open_folder = ui
                 .horizontal(|ui| {
                     ui.label(RichText::new(&issue_key).strong());
@@ -390,7 +407,6 @@ impl App {
             ui.label(format!("Attachments ({count}):"));
             ui.add_space(4.0);
 
-            // Attachment list — mutably iterates self.download_items (safe: no borrow on current_issue)
             egui::ScrollArea::vertical()
                 .max_height(300.0)
                 .show(ui, |ui| {
@@ -414,12 +430,12 @@ impl App {
                                         .show_percentage(),
                                 );
                                 let label = state.label();
-                                match state {
-                                    FileState::Done => {
-                                        ui.colored_label(Color32::GREEN, &label);
+                                match &state {
+                                    FileState::Done | FileState::AlreadyOnDisk => {
+                                        ui.colored_label(Color32::from_rgb(60, 180, 60), &label);
                                     }
                                     FileState::Error(_) => {
-                                        ui.colored_label(Color32::RED, &label);
+                                        ui.colored_label(Color32::from_rgb(200, 60, 60), &label);
                                     }
                                     _ => {
                                         ui.label(&label);
@@ -432,13 +448,15 @@ impl App {
 
             ui.add_space(8.0);
 
-            // Select/deselect buttons
-            let (select_all, deselect_all) = ui
+            // All action buttons in one row: Download Selected | Download All | Select All | Deselect All
+            let (dl_selected, dl_all, select_all, deselect_all) = ui
                 .horizontal(|ui| {
-                    (
-                        ui.button("Select All").clicked(),
-                        ui.button("Deselect All").clicked(),
-                    )
+                    let ds = ui.button("Download Selected").clicked();
+                    let da = ui.button("Download All").clicked();
+                    ui.add_space(8.0);
+                    let sa = ui.button("Select All").clicked();
+                    let de = ui.button("Deselect All").clicked();
+                    (ds, da, sa, de)
                 })
                 .inner;
 
@@ -452,19 +470,6 @@ impl App {
                     item.selected = false;
                 }
             }
-
-            ui.add_space(4.0);
-
-            // Download buttons
-            let (dl_selected, dl_all) = ui
-                .horizontal(|ui| {
-                    (
-                        ui.button("Download Selected").clicked(),
-                        ui.button("Download All").clicked(),
-                    )
-                })
-                .inner;
-
             if dl_all {
                 for item in &mut self.download_items {
                     item.selected = true;
@@ -482,7 +487,7 @@ impl App {
             ui.add_space(20.0);
             ui.centered_and_justified(|ui| {
                 ui.label(
-                    RichText::new("Enter an issue key or URL and click Fetch")
+                    RichText::new("Enter an issue key or URL above and click Fetch")
                         .color(Color32::GRAY),
                 );
             });
