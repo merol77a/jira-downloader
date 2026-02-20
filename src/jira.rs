@@ -190,14 +190,16 @@ impl JiraClient {
 
     pub async fn fetch_my_issues(&self) -> Result<Vec<IssueSummary>, String> {
         // JQL: all unresolved issues assigned to the current user, newest first
-        let jql = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC";
+        let jql = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
         let encoded_jql = url::form_urlencoded::byte_serialize(jql.as_bytes()).collect::<String>();
 
-        for api_ver in &["3", "2"] {
+        // Try the new /search/jql endpoint first (required as of 2025),
+        // fall back to the old /search for on-prem JIRA Server/Data Center.
+        for endpoint in &["rest/api/3/search/jql", "rest/api/2/search"] {
             let url = format!(
-                "{}/rest/api/{}/search?jql={}&fields=summary,status&maxResults=100",
+                "{}/{}?jql={}&fields=summary,status&maxResults=100",
                 self.base_url(),
-                api_ver,
+                endpoint,
                 encoded_jql
             );
 
@@ -207,7 +209,10 @@ impl JiraClient {
                 return Err(err);
             }
 
-            if status == reqwest::StatusCode::NOT_FOUND && *api_ver == "3" {
+            if (status == reqwest::StatusCode::NOT_FOUND
+                || status == reqwest::StatusCode::GONE)
+                && *endpoint == "rest/api/3/search/jql"
+            {
                 continue;
             }
 
