@@ -1,20 +1,28 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const KEYRING_SERVICE: &str = "jira-downloader";
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Key, Nonce,
+};
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use rand::RngCore;
+use winreg::{enums::*, RegKey};
+
+const REG_KEY_PATH: &str = "Software\\jira-downloader";
+const REG_ENC_VALUE: &str = "encryption_key";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub jira_url: String,
     pub email: String,
-    // Never written to disk — stored in Windows Credential Manager instead
+    /// Plaintext token — never written to disk.
     #[serde(skip)]
     pub api_token: String,
     pub download_dir: PathBuf,
-    // Tracks which email the stored credential belongs to,
-    // so we can clean up when the email changes.
+    /// AES-256-GCM encrypted token stored in config.json.
     #[serde(default)]
-    credential_user: String,
+    api_token_enc: String,
 }
 
 impl Default for AppConfig {
@@ -24,7 +32,7 @@ impl Default for AppConfig {
             email: String::new(),
             api_token: String::new(),
             download_dir: default_download_dir(),
-            credential_user: String::new(),
+            api_token_enc: String::new(),
         }
     }
 }
@@ -44,6 +52,68 @@ fn config_path() -> PathBuf {
         .join("config.json")
 }
 
+/// Returns the 32-byte AES key stored in the registry, generating one on first run.
+fn get_or_create_key() -> Result<[u8; 32], String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (subkey, _) = hkcu
+        .create_subkey(REG_KEY_PATH)
+        .map_err(|e| format!("Registry open error: {e}"))?;
+
+    // Try to read an existing key.
+    if let Ok(encoded) = subkey.get_value::<String, _>(REG_ENC_VALUE) {
+        if let Ok(bytes) = B64.decode(&encoded) {
+            if bytes.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                return Ok(arr);
+            }
+        }
+    }
+
+    // First run — generate and persist a new key.
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    let encoded = B64.encode(key);
+    subkey
+        .set_value(REG_ENC_VALUE, &encoded)
+        .map_err(|e| format!("Registry write error: {e}"))?;
+    Ok(key)
+}
+
+fn encrypt_token(token: &str) -> Result<String, String> {
+    let key_bytes = get_or_create_key()?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, token.as_bytes())
+        .map_err(|e| format!("Encryption error: {e}"))?;
+
+    // Encode as base64(nonce ++ ciphertext)
+    let mut combined = Vec::with_capacity(12 + ciphertext.len());
+    combined.extend_from_slice(&nonce_bytes);
+    combined.extend_from_slice(&ciphertext);
+    Ok(B64.encode(combined))
+}
+
+fn decrypt_token(encoded: &str) -> Option<String> {
+    let key_bytes = get_or_create_key().ok()?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+
+    let combined = B64.decode(encoded).ok()?;
+    if combined.len() < 13 {
+        return None;
+    }
+    let (nonce_bytes, ciphertext) = combined.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let plaintext = cipher.decrypt(nonce, ciphertext).ok()?;
+    String::from_utf8(plaintext).ok()
+}
+
 impl AppConfig {
     pub fn load() -> Self {
         let path = config_path();
@@ -56,18 +126,10 @@ impl AppConfig {
             Self::default()
         };
 
-        // Load token from Windows Credential Manager
-        let lookup_user = if config.credential_user.is_empty() {
-            config.email.clone()
-        } else {
-            config.credential_user.clone()
-        };
-
-        if !lookup_user.is_empty() {
-            if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &lookup_user) {
-                if let Ok(token) = entry.get_password() {
-                    config.api_token = token;
-                }
+        // Decrypt token from the stored encrypted blob.
+        if !config.api_token_enc.is_empty() {
+            if let Some(token) = decrypt_token(&config.api_token_enc) {
+                config.api_token = token;
             }
         }
 
@@ -75,30 +137,14 @@ impl AppConfig {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        // --- 1. Handle credential rotation if email changed ---
-        if !self.credential_user.is_empty()
-            && self.credential_user != self.email
-        {
-            // Delete the old credential silently
-            if let Ok(old_entry) =
-                keyring::Entry::new(KEYRING_SERVICE, &self.credential_user)
-            {
-                let _ = old_entry.delete_credential();
-            }
-        }
-
-        // --- 2. Store token in Windows Credential Manager ---
-        if !self.email.is_empty() && !self.api_token.is_empty() {
-            let entry = keyring::Entry::new(KEYRING_SERVICE, &self.email)
-                .map_err(|e| format!("Credential Manager error: {e}"))?;
-            entry
-                .set_password(&self.api_token)
-                .map_err(|e| format!("Failed to save token to Credential Manager: {e}"))?;
-        }
-
-        // --- 3. Write JSON config (token excluded via #[serde(skip)]) ---
         let mut on_disk = self.clone();
-        on_disk.credential_user = self.email.clone(); // remember which user owns the cred
+
+        // Encrypt the plaintext token for storage.
+        if !self.api_token.is_empty() {
+            on_disk.api_token_enc = encrypt_token(&self.api_token)?;
+        } else {
+            on_disk.api_token_enc = String::new();
+        }
 
         let path = config_path();
         if let Some(parent) = path.parent() {
@@ -111,20 +157,5 @@ impl AppConfig {
             .map_err(|e| format!("Failed to write config: {e}"))?;
 
         Ok(())
-    }
-
-    /// Remove the stored credential from Windows Credential Manager.
-    #[allow(dead_code)]
-    pub fn delete_credential(&self) {
-        let user = if self.credential_user.is_empty() {
-            &self.email
-        } else {
-            &self.credential_user
-        };
-        if !user.is_empty() {
-            if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, user) {
-                let _ = entry.delete_credential();
-            }
-        }
     }
 }

@@ -16,7 +16,9 @@ bytes        = "1"
 rfd          = "0.15"
 url          = "2"
 base64       = "0.22"
-keyring      = "3"
+aes-gcm      = "0.10"
+rand         = "0.8"
+winreg       = "0.52"
 
 [profile.release]
 opt-level = 3

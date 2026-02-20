@@ -151,7 +151,7 @@ impl App {
 
                 ui.label(RichText::new("Note:").strong());
                 ui.colored_label(
-                    Color32::YELLOW,
+                    Color32::from_rgb(200, 120, 0),
                     "If your company uses SSO, generate the token from a mobile hotspot \
                      or ask IT to whitelist id.atlassian.com.",
                 );
@@ -280,7 +280,7 @@ impl App {
                                         .unwrap_or(false);
 
                                     let key_text = if is_current {
-                                        RichText::new(&issue.key).strong().color(Color32::LIGHT_BLUE)
+                                        RichText::new(&issue.key).strong().color(Color32::from_rgb(80, 160, 240))
                                     } else {
                                         RichText::new(&issue.key).strong()
                                     };
@@ -616,7 +616,7 @@ impl App {
                             ui.label(summary);
 
                             let status_color =
-                                if is_closed { Color32::RED } else { Color32::GREEN };
+                                if is_closed { Color32::from_rgb(200, 60, 60) } else { Color32::from_rgb(60, 180, 60) };
                             ui.colored_label(status_color, &ctrl.issue_status);
 
                             ui.label(format_size(incident.folder_size));
@@ -782,11 +782,11 @@ impl eframe::App for App {
 fn status_color(status: &str) -> Color32 {
     let s = status.to_lowercase();
     if s.contains("progress") || s.contains("review") || s.contains("open") {
-        Color32::LIGHT_BLUE
+        Color32::from_rgb(80, 160, 240)
     } else if s.contains("done") || s.contains("closed") || s.contains("resolv") {
-        Color32::DARK_GRAY
+        Color32::from_rgb(120, 130, 145)
     } else {
-        Color32::LIGHT_GRAY
+        Color32::from_gray(170)
     }
 }
 
