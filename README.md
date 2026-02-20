@@ -68,10 +68,17 @@ Error: OpenGL(PainterError("egui_glow requires opengl 2.0+. "))
 |---|---|
 | Outdated graphics driver | Update your GPU driver from the manufacturer's website (Intel / AMD / NVIDIA) |
 | Running inside a VM (VMware, VirtualBox, Hyper-V) | Enable 3D acceleration in the VM settings, or install the VM guest additions / tools |
-| Remote Desktop (RDP) | RDP disables GPU acceleration by default. Run the app locally, or use a remote session tool that supports GPU forwarding (e.g. Parsec, NoMachine) |
+| Remote Desktop (RDP) | RDP disables GPU acceleration by default — see the RDP section below |
 | Very old integrated graphics | Upgrade to a system with a DirectX 10+ capable GPU |
 
-> **Note:** The app uses hardware-accelerated OpenGL for rendering. Software-only (CPU) rendering is not supported in the current build.
+### RDP / Remote Desktop
+
+The app uses **wgpu** for rendering, which on Windows targets DirectX 11/12. This works over RDP as long as the remote machine has a proper GPU driver installed.
+
+If you still get a rendering error over RDP:
+
+1. On the **remote machine**, make sure the latest GPU driver is installed (Intel / AMD / NVIDIA).
+2. Alternatively use a remote access tool with full GPU forwarding: **Parsec**, **NoMachine**, or **Chrome Remote Desktop**.
 
 ## Configuration
 

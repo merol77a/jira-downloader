@@ -19,6 +19,7 @@ fn main() -> eframe::Result<()> {
             .with_title("JIRA Attachment Downloader")
             .with_inner_size([900.0, 600.0])
             .with_min_inner_size([700.0, 400.0]),
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 
