@@ -49,9 +49,29 @@ All dependencies are managed by Cargo and downloaded automatically on first buil
 | `serde` / `serde_json` | Config serialization |
 | `aes-gcm` | Token encryption |
 | `winreg` | Encryption key storage (Windows Registry) |
-| `keyring` | — |
 | `chrono` | Date handling |
 | `rfd` | Native folder picker dialog |
+
+## Requirements
+
+### OpenGL 2.0+
+
+The GUI renderer (`egui_glow`) requires **OpenGL 2.0 or newer**. If you see this error on launch:
+
+```
+Error: OpenGL(PainterError("egui_glow requires opengl 2.0+. "))
+```
+
+**Common causes and fixes:**
+
+| Situation | Fix |
+|---|---|
+| Outdated graphics driver | Update your GPU driver from the manufacturer's website (Intel / AMD / NVIDIA) |
+| Running inside a VM (VMware, VirtualBox, Hyper-V) | Enable 3D acceleration in the VM settings, or install the VM guest additions / tools |
+| Remote Desktop (RDP) | RDP disables GPU acceleration by default. Run the app locally, or use a remote session tool that supports GPU forwarding (e.g. Parsec, NoMachine) |
+| Very old integrated graphics | Upgrade to a system with a DirectX 10+ capable GPU |
+
+> **Note:** The app uses hardware-accelerated OpenGL for rendering. Software-only (CPU) rendering is not supported in the current build.
 
 ## Configuration
 
